@@ -185,6 +185,8 @@ public final class AnalysisPhaseRunner {
       BuildOptions targetOptions,
       Set<String> multiCpu)
       throws InterruptedException, InvalidConfigurationException, ViewCreationFailedException {
+    System.out.println("Starting analysis");
+
     Stopwatch timer = Stopwatch.createStarted();
     env.getReporter().handle(Event.progress("Loading complete.  Analyzing..."));
 

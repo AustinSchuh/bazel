@@ -14,18 +14,26 @@
 
 package com.google.devtools.build.lib.analysis.constraints;
 
+import com.google.common.base.Preconditions;
 import com.google.common.base.Predicates;
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
 import com.google.common.base.Verify;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
+import com.google.common.eventbus.EventBus;
 import com.google.devtools.build.lib.analysis.ConfiguredTarget;
+import com.google.devtools.build.lib.analysis.PlatformConfiguration;
 import com.google.devtools.build.lib.analysis.TransitiveInfoCollection;
 import com.google.devtools.build.lib.analysis.ViewCreationFailedException;
 import com.google.devtools.build.lib.analysis.config.BuildConfiguration;
 import com.google.devtools.build.lib.analysis.configuredtargets.OutputFileConfiguredTarget;
 import com.google.devtools.build.lib.analysis.constraints.SupportedEnvironmentsProvider.RemovedEnvironmentCulprit;
+import com.google.devtools.build.lib.analysis.platform.ConstraintValueInfo;
+import com.google.devtools.build.lib.analysis.platform.PlatformInfo;
+import com.google.devtools.build.lib.analysis.platform.PlatformProviderUtils;
 import com.google.devtools.build.lib.cmdline.Label;
 import com.google.devtools.build.lib.events.Event;
 import com.google.devtools.build.lib.events.ExtendedEventHandler;
@@ -35,7 +43,11 @@ import com.google.devtools.build.lib.packages.NoSuchTargetException;
 import com.google.devtools.build.lib.packages.Target;
 import com.google.devtools.build.lib.pkgcache.PackageManager;
 import com.google.devtools.build.lib.rules.AliasConfiguredTarget;
-import com.google.devtools.build.lib.skyframe.BuildConfigurationValue.Key;
+import com.google.devtools.build.lib.skyframe.AspectValue.AspectValueKey;
+import com.google.devtools.build.lib.skyframe.BuildConfigurationValue;
+import com.google.devtools.build.lib.skyframe.ConfiguredTargetKey;
+import com.google.devtools.build.lib.skyframe.SkyframeAnalysisResult;
+import com.google.devtools.build.lib.skyframe.SkyframeBuildView;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -55,8 +67,9 @@ import javax.annotation.Nullable;
  */
 public class TopLevelConstraintSemantics {
   private final PackageManager packageManager;
-  private final Function<Key, BuildConfiguration> configurationProvider;
+  private final Function<BuildConfigurationValue.Key, BuildConfiguration> configurationProvider;
   private final ExtendedEventHandler eventHandler;
+  private final SkyframeBuildView skyframeBuildView;
 
   /**
    * Constructor with helper classes for loading targets.
@@ -65,9 +78,11 @@ public class TopLevelConstraintSemantics {
    * @param eventHandler the build's event handler
    */
   public TopLevelConstraintSemantics(
+      SkyframeBuildView skyframeBuildView,
       PackageManager packageManager,
-      Function<Key, BuildConfiguration> configurationProvider,
+      Function<BuildConfigurationValue.Key, BuildConfiguration> configurationProvider,
       ExtendedEventHandler eventHandler) {
+    this.skyframeBuildView = skyframeBuildView;
     this.packageManager = packageManager;
     this.configurationProvider = configurationProvider;
     this.eventHandler = eventHandler;
@@ -105,6 +120,10 @@ public class TopLevelConstraintSemantics {
    *     environment declared through {@link CoreOptions#targetEnvironments}
    */
   public Set<ConfiguredTarget> checkTargetEnvironmentRestrictions(
+      Supplier<Map<BuildConfigurationValue.Key, BuildConfiguration>> configurationLookupSupplier,
+      boolean keepGoing,
+      int loadingPhaseThreads,
+      EventBus eventBus,
       ImmutableList<ConfiguredTarget> topLevelTargets)
       throws ViewCreationFailedException, InterruptedException {
     ImmutableSet.Builder<ConfiguredTarget> badTargets = ImmutableSet.builder();
@@ -115,6 +134,15 @@ public class TopLevelConstraintSemantics {
     Multimap<ConfiguredTarget, MissingEnvironment> exceptionInducingTargets =
         ArrayListMultimap.create();
     for (ConfiguredTarget topLevelTarget : topLevelTargets) {
+      //System.out.println("");
+      //System.out.println("Inspecting:");
+      //System.out.println(topLevelTarget.getLabel());
+      //System.out.println("fieldNames:");
+      //System.out.println(topLevelTarget.getFieldNames());
+
+      //System.out.println(topLevelTarget.getConfigurationKey());
+      //System.out.println(topLevelTarget);
+
       BuildConfiguration config = configurationProvider.apply(topLevelTarget.getConfigurationKey());
       Target target = null;
       try {
@@ -125,30 +153,122 @@ public class TopLevelConstraintSemantics {
                 "Unable to get target from package when checking environment restrictions. " + e));
         continue;
       }
+      //System.out.println(target);
       if (config == null) {
         // TODO(bazel-team): support file targets (they should apply package-default constraints).
         continue;
       } else if (!config.enforceConstraints()) {
-        continue;  // Constraint checking is disabled for all targets.
+        continue; // Constraint checking is disabled for all targets.
       } else if (target.getAssociatedRule() == null) {
         continue;
       } else if (!target.getAssociatedRule().getRuleClassObject().supportsConstraintChecking()) {
         continue; // This target doesn't participate in constraints.
       }
 
+      //System.out.println("getAttributeContiner.getAttr");
+      Object target_compatible_with_object =
+          target.getAssociatedRule().getAttributeContainer().getAttr("target_compatible_with");
+
+      // Get the target platform key.
+      ConfiguredTargetKey targetPlatformKey =
+          ConfiguredTargetKey.of(
+              Preconditions.checkNotNull(config.getFragment(PlatformConfiguration.class))
+                  .getTargetPlatform(),
+              config);
+
+      ImmutableList.Builder<ConfiguredTargetKey> builder = ImmutableList.builder();
+
+      builder.add(targetPlatformKey);
+      if (target_compatible_with_object instanceof ImmutableList) {
+        // Got a list of labels!
+        ImmutableList<Label> target_compatible_with_list =
+            (ImmutableList<Label>) target_compatible_with_object;
+
+        for (Label l : target_compatible_with_list) {
+          //System.out.println(l);
+          Target constraintTarget = null;
+          try {
+            constraintTarget = packageManager.getTarget(eventHandler, l);
+          } catch (NoSuchPackageException | NoSuchTargetException e) {
+            eventHandler.handle(
+                Event.error(
+                    "Unable to get target from package when checking environment restrictions. "
+                        + e));
+            continue;
+          }
+
+          //System.out.println(constraintTarget.getAssociatedRule());
+
+          builder.add(ConfiguredTargetKey.of(l, config));
+
+        }
+      }
+
+      //System.out.println(target_compatible_with_object);
+
+      SkyframeAnalysisResult skyframeAnalysisResult;
+
+      ImmutableList<ConfiguredTargetKey> targets = builder.build();
+      try {
+        skyframeAnalysisResult =
+            skyframeBuildView.configureTargets(
+                eventHandler,
+                targets,
+                ImmutableList.<AspectValueKey>of(),
+                Suppliers.memoize(configurationLookupSupplier),
+                eventBus,
+                keepGoing,
+                loadingPhaseThreads);
+      } finally {
+        skyframeBuildView.clearInvalidatedConfiguredTargets();
+      }
+
+      if (skyframeAnalysisResult.getConfiguredTargets().size() != targets.size()) {
+        throw new ViewCreationFailedException("found wrong number of targets");
+      }
+
+      // Grab the platform info.
+      ConfiguredTarget platformTarget = skyframeAnalysisResult.getConfiguredTargets().get(0);
+      PlatformInfo platformInfo = PlatformProviderUtils.platform(platformTarget);
+      if (platformInfo == null) {
+        throw new ViewCreationFailedException("Couldn't find platform info");
+      }
+      //System.out.println(platformInfo);
+
+      {
+        boolean bad = false;
+        for (int i = 1; i < targets.size(); ++i) {
+          ConstraintValueInfo cvi =
+              PlatformProviderUtils.constraintValue(
+                  skyframeAnalysisResult.getConfiguredTargets().get(i));
+          // System.out.println(cvi);
+          if (!platformInfo.constraints().containsAll(ImmutableList.<ConstraintValueInfo>of(cvi))) {
+            System.out.println(
+                "Violated constraint, skipping " + topLevelTarget.getLabel().toString());
+            bad = true;
+            break;
+          }
+        }
+        if (bad) {
+          badTargets.add(topLevelTarget);
+          continue;
+        }
+      }
+
       // Check explicitly expected environments.
-      exceptionInducingTargets.putAll(topLevelTarget, // This is a no-op on empty collections.
+      exceptionInducingTargets.putAll(
+          topLevelTarget, // This is a no-op on empty collections.
           getMissingEnvironments(topLevelTarget, config.getTargetEnvironments()));
 
       // Check auto-detected CPU environments.
       try {
-        if (!getMissingEnvironments(topLevelTarget,
-            autoConfigureTargetEnvironments(config, config.getAutoCpuEnvironmentGroup()))
+        if (!getMissingEnvironments(
+                topLevelTarget,
+                autoConfigureTargetEnvironments(config, config.getAutoCpuEnvironmentGroup()))
             .isEmpty()) {
           badTargets.add(topLevelTarget);
         }
-      } catch (NoSuchPackageException
-          | NoSuchTargetException e) {
+      } catch (NoSuchPackageException | NoSuchTargetException e) {
         throw new ViewCreationFailedException("invalid target environment", e);
       }
     }
@@ -156,25 +276,22 @@ public class TopLevelConstraintSemantics {
     if (!exceptionInducingTargets.isEmpty()) {
       throw new ViewCreationFailedException(getBadTargetsUserMessage(exceptionInducingTargets));
     }
-    return ImmutableSet.copyOf(
-        badTargets
-            .addAll(exceptionInducingTargets.keySet())
-            .build());
+    return ImmutableSet.copyOf(badTargets.addAll(exceptionInducingTargets.keySet()).build());
   }
 
   /**
-   * Helper method for {@link #checkTargetEnvironmentRestrictions} that populates inferred
-   * expected environments.
+   * Helper method for {@link #checkTargetEnvironmentRestrictions} that populates inferred expected
+   * environments.
    */
-  private List<Label> autoConfigureTargetEnvironments(BuildConfiguration config,
-      @Nullable Label environmentGroupLabel)
+  private List<Label> autoConfigureTargetEnvironments(
+      BuildConfiguration config, @Nullable Label environmentGroupLabel)
       throws InterruptedException, NoSuchTargetException, NoSuchPackageException {
     if (environmentGroupLabel == null) {
       return ImmutableList.of();
     }
 
-    EnvironmentGroup environmentGroup = (EnvironmentGroup)
-        packageManager.getTarget(eventHandler, environmentGroupLabel);
+    EnvironmentGroup environmentGroup =
+        (EnvironmentGroup) packageManager.getTarget(eventHandler, environmentGroupLabel);
 
     ImmutableList.Builder<Label> targetEnvironments = new ImmutableList.Builder<>();
     for (Label environmentLabel : environmentGroup.getEnvironments()) {

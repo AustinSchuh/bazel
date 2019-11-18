@@ -266,6 +266,8 @@ public class RuleClass {
    */
   public static final String RESTRICTED_ENVIRONMENT_ATTR = "restricted_to";
 
+  public static final String TARGET_RESTRICTED_TO_ATTR = "target_restricted_to";
+
   /**
    * For Bazel's constraint system: the attribute that declares the set of environments a rule
    * supports, appending them to the defaults for their respective groups.
@@ -1334,11 +1336,10 @@ public class RuleClass {
      * <p>The input list cannot be empty.
      */
     public <TYPE> Builder restrictedTo(Label firstEnvironment, Label... otherEnvironments) {
-      ImmutableList<Label> environments = ImmutableList.<Label>builder().add(firstEnvironment)
-          .add(otherEnvironments).build();
-      add(
-          attr(DEFAULT_RESTRICTED_ENVIRONMENT_ATTR, LABEL_LIST)
-              .value(environments));
+      ImmutableList<Label> environments =
+          ImmutableList.<Label>builder().add(firstEnvironment).add(otherEnvironments).build();
+      add(attr(DEFAULT_RESTRICTED_ENVIRONMENT_ATTR, LABEL_LIST).value(environments));
+      System.out.println("Building restrictedTo");
       return this;
     }
 
@@ -1354,6 +1355,8 @@ public class RuleClass {
       this.supportsConstraintChecking = false;
       attributes.remove(RuleClass.COMPATIBLE_ENVIRONMENT_ATTR);
       attributes.remove(RuleClass.RESTRICTED_ENVIRONMENT_ATTR);
+      // TODO(austin): Should this remove target_compatible_with too?
+      attributes.remove(RuleClass.TARGET_RESTRICTED_TO_ATTR);
       return this;
     }
 

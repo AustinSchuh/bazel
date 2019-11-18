@@ -383,18 +383,18 @@ public class BuildView {
 
     getArtifactFactory().noteAnalysisStarting();
     SkyframeAnalysisResult skyframeAnalysisResult;
-    try {
-      Supplier<Map<BuildConfigurationValue.Key, BuildConfiguration>> configurationLookupSupplier =
-          () -> {
-            Map<BuildConfigurationValue.Key, BuildConfiguration> result = new HashMap<>();
-            for (TargetAndConfiguration node : topLevelTargetsWithConfigs) {
-              if (node.getConfiguration() != null) {
-                result.put(
-                    BuildConfigurationValue.key(node.getConfiguration()), node.getConfiguration());
-              }
+    Supplier<Map<BuildConfigurationValue.Key, BuildConfiguration>> configurationLookupSupplier =
+        () -> {
+          Map<BuildConfigurationValue.Key, BuildConfiguration> result = new HashMap<>();
+          for (TargetAndConfiguration node : topLevelTargetsWithConfigs) {
+            if (node.getConfiguration() != null) {
+              result.put(
+                  BuildConfigurationValue.key(node.getConfiguration()), node.getConfiguration());
             }
-            return result;
-          };
+          }
+          return result;
+        };
+    try {
       skyframeAnalysisResult =
           skyframeBuildView.configureTargets(
               eventHandler,
@@ -420,10 +420,16 @@ public class BuildView {
 
     Set<ConfiguredTarget> targetsToSkip =
         new TopLevelConstraintSemantics(
+                skyframeBuildView,
                 skyframeExecutor.getPackageManager(),
                 input -> skyframeExecutor.getConfiguration(eventHandler, input),
                 eventHandler)
-            .checkTargetEnvironmentRestrictions(skyframeAnalysisResult.getConfiguredTargets());
+            .checkTargetEnvironmentRestrictions(
+                configurationLookupSupplier,
+                keepGoing,
+                loadingPhaseThreads,
+                eventBus,
+                skyframeAnalysisResult.getConfiguredTargets());
 
     AnalysisResult result =
         createResult(

@@ -69,15 +69,12 @@ public class ToolchainRule implements RuleDefinition {
                 .mandatoryProviders(ConstraintValueInfo.PROVIDER.id())
                 .allowedFileTypes()
                 .nonconfigurable("part of toolchain configuration"))
-        /* <!-- #BLAZE_RULE(toolchain).ATTRIBUTE(target_compatible_with) -->
-        A list of <code>constraint_value</code>s that must be satisfied by the target platform in
-        order for this toolchain to be selected for a target building for that platform.
-        <!-- #END_BLAZE_RULE.ATTRIBUTE --> */
-        .add(
-            attr(TARGET_COMPATIBLE_WITH_ATTR, BuildType.LABEL_LIST)
-                .mandatoryProviders(ConstraintValueInfo.PROVIDER.id())
-                .allowedFileTypes()
-                .nonconfigurable("part of toolchain configuration"))
+        // .add(
+        // attr(TARGET_COMPATIBLE_WITH_ATTR, BuildType.LABEL_LIST)
+        // .mandatoryProviders(ConstraintValueInfo.PROVIDER.id())
+        // .allowedFileTypes()
+        // .nonconfigurable("part of toolchain configuration"))
+
         /* <!-- #BLAZE_RULE(toolchain).ATTRIBUTE(toolchain) -->
         The target representing the actual tool or tool suite that is made available when this
         toolchain is selected.
